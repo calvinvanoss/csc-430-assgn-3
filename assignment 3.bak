@@ -94,9 +94,7 @@
                   [else (get-fundef name r)])]
     [else (error "OAZO get-fundef failure")]))
 
-(check-equal? (get-fundef 'name (list (fundefC 'name 'arg (plusC (numC 1) (numC 2))))) (plusC (numC 1) (numC 2)))
-(check-exn (regexp (regexp-quote "OAZO get-fundef failure"))
-           (lambda () (get-fundef 'f (list (fundefC 'name 'arg (numC 4))))))
+; (check-equal? (get-fundef 'f (list (fundefC 'name 'arg (ExprC)))))
 
 ; interprets exprC using a given list of fundefs to return the result of the interpretation as a Real
 (: interp (-> ExprC (Listof fundefC) Real))
@@ -108,22 +106,5 @@
     [(multC l r) (* (interp l fds) (interp r fds))]
     [(divC l r) (/ (interp l fds) (interp r fds))]
     [(appC fun arg) (let ([fd (get-fundef fun fds)]) (interp (subst arg fun fd) fds))]
-    [(idC _) (error "OAZO interp shouldn't get here")]))
-
-(check-equal? (interp (plusC (numC 1) (numC 2)) '()) 3)
-(check-equal? (interp (subC (numC 7) (numC 3)) '()) 4)
-(check-equal? (interp (multC (numC 7) (numC 3)) '()) 21)
-(check-equal? (interp (divC (numC 9) (numC 3)) '()) 3)
-; needs appC case
-(check-exn (regexp (regexp-quote "OAZO interp shouldn't get here"))
-           (lambda () (interp (appC 'name (numC 2)) (list (fundefC 'name 'arg (plusC (numC 4) (idC 'arg)))))))
-
-; interprets the function named main using the list of function definitions
-(: interp-fns (-> (Listof fundefC) Real))
-(define (interp-fns funs))
-
-; (check-equal? (interp-fns (appC 'plus1 (numC 2)) '((fundefC 'plus1 'arg (plusC (numC 1) (idC 'arg))))) 1)
-
-; parses and interprets an OAZO program
-(: top-interp (-> Sexp Real))
-(define (top-interp s-expression))
+    [(idC _) (error "OAZO interp shouldn't get here")]
+    [else (error "OAZO interp failure")]))
