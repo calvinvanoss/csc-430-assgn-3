@@ -10,6 +10,7 @@
 (struct divC ([l : ExprC][r : ExprC]) #:transparent)
 (struct idC ([s : Symbol]) #:transparent)
 (struct appC ([fun : Symbol][arg : ExprC]) #:transparent)
+(struct ifleq0? ([test : numC] [then : ExprC] [else : ExprC]) #:transparent)
 
 (struct fundefC ([name : Symbol][arg : Symbol][body : ExprC]) #:transparent)
 
@@ -27,6 +28,7 @@
       [else (error "OAZO parse-binop failure")]))
   (match exp
     [(list (? symbol? op) l r) (parse-binop op l r)]
+    [(list 'ifleq0? (? exprC? test) (? list? then) (? list else)) (ifleq0? (parse test)(parse then) (parse else))]
     [(? real? n) (numC n)]
     [(? symbol? s) (idC s)]
     [(list (? symbol? fun) (? real? arg)) (appC fun (parse arg))]
