@@ -120,10 +120,18 @@
 
 ; interprets the function named main using the list of function definitions
 (: interp-fns (-> (Listof fundefC) Real))
-(define (interp-fns funs))
+(define (interp-fns funs)
+  (cond
+    [(empty? funs) (error "OAZO main is empty")]
+    [else (interp (get-fundef 'main funs) funs)]))
 
-; (check-equal? (interp-fns (appC 'plus1 (numC 2)) '((fundefC 'plus1 'arg (plusC (numC 1) (idC 'arg))))) 1)
+(check-equal? (interp-fns (list (fundefC 'main 'init (plusC (numC 2) (numC 2))))) 4)
+(check-exn (regexp (regexp-quote "OAZO main is empty"))
+           (lambda () (interp-fns '())))
 
-; parses and interprets an OAZO program
+; parses and interprets an OAZO program 
 (: top-interp (-> Sexp Real))
-(define (top-interp s-expression))
+(define (top-interp fun-sexps)
+  (interp-fns (parse-prog fun-sexps)))
+
+; test case that consists of OAZO3 program which rounds numbers to the nearest integer
