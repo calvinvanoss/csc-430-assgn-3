@@ -2,13 +2,8 @@
 
 (require typed/rackunit)
 
-(struct bind ([name : Symbol][val : Value]) #:transparent)
+(struct bind ([name : Symbol][val : Real]))
 (define-type Env (Listof bind))
-
-(define-type List-symbols (Listof Symbol))
-(struct numV ([n : Real]) #:transparent)
-(struct funV ([name : Symbol] [args : List-symbols] [body : ExprC]) #:transparent)
-(define-type Value (U numV funV))
 
 (define-type ExprC (U numC binopC idC appC ifleq0?))
 (struct numC ([n : Real]) #:transparent)
@@ -76,27 +71,21 @@
 (check-exn (regexp (regexp-quote "OAZO parse-prog failure")) (lambda () (parse-prog "")))
 
 ; gets fundef body given name of fundef and list of fundefs
-(: get-fundef (-> Symbol (Listof funV) funV))
+(: get-fundef (-> Symbol (Listof fundefC) fundefC))
 (define (get-fundef name fds)
   (match fds
     [(cons f r) (cond
-                  [(eq? (funV-name f) name) f]
+                  [(eq? (fundefC-name f) name) f]
                   [else (get-fundef name r)])]
     [else (error "OAZO get-fundef failure")]))
 
-(check-equal? (get-fundef 'name (list (funV 'name '(arg) (binopC '+ (numC 1) (numC 2)))))
-              (funV 'name '(arg) (binopC '+ (numC 1) (numC 2))))
+(check-equal? (get-fundef 'name (list (fundefC 'name '(arg) (binopC '+ (numC 1) (numC 2)))))
+              (fundefC 'name '(arg) (binopC '+ (numC 1) (numC 2))))
 (check-exn (regexp (regexp-quote "OAZO get-fundef failure"))
-           (lambda () (get-fundef 'f (list (funV 'name '(arg) (numC 4))))))
+           (lambda () (get-fundef 'f (list (fundefC 'name '(arg) (numC 4))))))
 
-; given an OAZO5 value, return a string representation of that value
-;(: serialize (-> Value String))
-;(define (serialize value)
-;  )
-
-
-; for name in bind in given list of bindings (env) if given symbol matches name, then set bind-val to that
-(: lookup (-> Symbol Env Value))
+; lookup
+(: lookup (-> Symbol Env Real))
 (define (lookup for env)
   (cond
     [(empty? env) (error "OAZO lookup: name not found")]
@@ -105,91 +94,43 @@
              (bind-val (first env))]
             [else (lookup for (rest env))])]))
 
-(: num+ (-> Value Value Value))
-(define (num+ l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (+ (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num+: At least one argument was not a number")]))
-(check-exn (regexp (regexp-quote "OAZO num+: At least one argument was not a number"))
-           (lambda () (num+ (numV 1) (funV 's (list 's) (numC 1)))))
-
-(: num- (-> Value Value Value))
-(define (num- l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (- (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num-: At least one argument was not a number")]))
-(check-exn (regexp (regexp-quote "OAZO num-: At least one argument was not a number"))
-           (lambda () (num- (numV 1) (funV 's (list 's) (numC 1)))))
-
-(: num* (-> Value Value Value))
-(define (num* l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (* (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num*: At least one argument was not a number")]))
-(check-exn (regexp (regexp-quote "OAZO num*: At least one argument was not a number"))
-           (lambda () (num* (numV 1) (funV 's (list 's) (numC 1)))))
-
-(: num/ (-> Value Value Value))
-(define (num/ l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (/ (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num/: At least one argument was not a number")]))
-(check-exn (regexp (regexp-quote "OAZO num/: At least one argument was not a number"))
-           (lambda () (num/ (numV 1) (funV 's (list 's) (numC 1)))))
-
 ; interprets exprC using a given list of fundefs to return the result of the interpretation as a Real
-(: interp (-> ExprC Env (Listof funV) Value))
+(: interp (-> ExprC Env (Listof fundefC) Real))
 (define (interp exprc env fds)
   (match exprc
-    [(numC n) (numV n)]
+    [(numC n) n]
     [(binopC op l r) (match op
-                       ['+ (num+ (interp l env fds) (interp r env fds))]
-                       ['- (num- (interp l env fds) (interp r env fds))]
-                       ['* (num* (interp l env fds) (interp r env fds))]
+                       ['+ (+ (interp l env fds) (interp r env fds))]
+                       ['- (- (interp l env fds) (interp r env fds))]
+                       ['* (* (interp l env fds) (interp r env fds))]
                        ['/ (let ([denominator (interp r env fds)])
-                             (if (or (equal? denominator (numV 0)) (equal? denominator (numC 0)))
-                                 (error "OAZO /0") (num/ (interp l env fds) denominator)))]
+                             (if (eq? denominator 0) (error "OAZO /0") (/ (interp l env fds) denominator)))]
                        [else (error "OAZO invalid op")])]
     [(appC fun args) (let ([fd (get-fundef fun fds)])
-                       (if (eq? (length args) (length (funV-args fd)))
-                           (interp (funV-body fd) (cast (map
-                                                            (lambda (arg param)
-                                                              (bind (cast arg Symbol) (interp (cast param ExprC) env fds)))
-                                                            (funV-args fd) args) Env) fds)
+                       (if (eq? (length args) (length (fundefC-args fd)))
+                           (interp (fundefC-body fd) (cast (map (lambda (arg param) (bind (cast arg Symbol) (interp (cast param ExprC) env fds))) (fundefC-args fd) args) Env) fds)
                            (error "OAZO incorrect number of arguments")))]
     [(idC n) (lookup n env)]))
 
 
 (check-exn (regexp (regexp-quote "OAZO incorrect number of arguments"))
-           (lambda () (interp (appC 'f '()) '() (list (funV 'f '(a b) (numC 0))))))
+           (lambda () (interp (appC 'f '()) '() (list (fundefC 'f '(a b) (numC 0))))))
 (check-exn (regexp (regexp-quote "OAZO incorrect number of arguments"))
-           (lambda () (interp (appC 'f (list (numC 1) (numC 2))) '() (list (funV 'f '(a) (numC 0))))))
-(check-equal? (interp (appC 'f (list (numC 1) (numC 2))) '() (list (funV 'f '(a b) (binopC '+ (idC 'a) (idC 'b))))) (numV 3))
+           (lambda () (interp (appC 'f (list (numC 1) (numC 2))) '() (list (fundefC 'f '(a) (numC 0))))))
+(check-= (interp (appC 'f (list (numC 1) (numC 2))) '() (list (fundefC 'f '(a b) (binopC '+ (idC 'a) (idC 'b))))) 3 0)
 (check-exn (regexp (regexp-quote "OAZO /0"))
            (lambda () (interp (binopC '/ (numC 5) (numC 0)) '() '())))
 (check-exn (regexp (regexp-quote "OAZO /0"))
            (lambda () (interp (binopC '/ (numC 5) (binopC '+ (numC 0) (numC 0))) '() '())))
-(check-equal? (interp (binopC '+ (numC 1) (numC 2)) '() '()) (numV 3))
-(check-equal? (interp (binopC '- (numC 7) (numC 3)) '() '()) (numV 4))
-(check-equal? (interp (binopC '* (numC 7) (numC 3)) '() '()) (numV 21))
-(check-equal? (interp (binopC '/ (numC 9) (numC 3)) '() '()) (numV 3))
+(check-equal? (interp (binopC '+ (numC 1) (numC 2)) '() '()) 3)
+(check-equal? (interp (binopC '- (numC 7) (numC 3)) '() '()) 4)
+(check-equal? (interp (binopC '* (numC 7) (numC 3)) '() '()) 21)
+(check-equal? (interp (binopC '/ (numC 9) (numC 3)) '() '()) 3)
 (check-exn (regexp (regexp-quote "OAZO invalid op"))
            (lambda () (interp (binopC 'fail (numC 1) (numC 2)) '() '())))
-(check-equal? (interp (appC 'f (list (numC 2))) '() (list (funV 'f '(x) (binopC '+ (idC 'x) (numC 14))))) (numV 16))
+(check-equal? (interp (appC 'f (list (numC 2))) '() (list (fundefC 'f '(x) (binopC '+ (idC 'x) (numC 14))))) 16)
 (check-exn (regexp (regexp-quote "OAZO lookup: name not found"))
            (lambda () (interp (idC 'fail) '() '())))
-
-
-
-
 #|
 
 ; interprets the function named main using the list of function definitions
