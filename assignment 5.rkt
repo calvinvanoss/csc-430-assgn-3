@@ -2,13 +2,15 @@
 
 (require typed/rackunit)
 
-(struct bind ([name : Symbol][val : Value]) #:transparent)
+(struct bind ([name : Symbol] [val : Value]) #:transparent)
 (define-type Env (Listof bind))
 
 (define-type List-symbols (Listof Symbol))
 (struct numV ([n : Real]) #:transparent)
 (struct funV ([name : Symbol] [args : List-symbols] [body : ExprC]) #:transparent)
 (define-type Value (U numV funV))
+
+(define top-env (list (bind 'true #t) (bind 'false #f)))
 
 (define-type ExprC (U numC binopC idC appC ifleq0?))
 (struct numC ([n : Real]) #:transparent)
@@ -90,9 +92,9 @@
            (lambda () (get-fundef 'f (list (funV 'name '(arg) (numC 4))))))
 
 ; given an OAZO5 value, return a string representation of that value
-;(: serialize (-> Value String))
-;(define (serialize value)
-;  )
+(: serialize (-> Value String))
+(define (serialize value)
+  (~v value))
 
 
 ; for name in bind in given list of bindings (env) if given symbol matches name, then set bind-val to that
@@ -105,6 +107,7 @@
              (bind-val (first env))]
             [else (lookup for (rest env))])]))
 
+; add 2 numVs
 (: num+ (-> Value Value Value))
 (define (num+ l r)
   (cond
@@ -112,9 +115,11 @@
      (numV (+ (numV-n l) (numV-n r)))]
     [else
      (error 'num+ "OAZO num+: At least one argument was not a number")]))
+
 (check-exn (regexp (regexp-quote "OAZO num+: At least one argument was not a number"))
            (lambda () (num+ (numV 1) (funV 's (list 's) (numC 1)))))
 
+; subtract 2 numVs
 (: num- (-> Value Value Value))
 (define (num- l r)
   (cond
@@ -122,9 +127,11 @@
      (numV (- (numV-n l) (numV-n r)))]
     [else
      (error 'num+ "OAZO num-: At least one argument was not a number")]))
+
 (check-exn (regexp (regexp-quote "OAZO num-: At least one argument was not a number"))
            (lambda () (num- (numV 1) (funV 's (list 's) (numC 1)))))
 
+; multiply 2 numVs
 (: num* (-> Value Value Value))
 (define (num* l r)
   (cond
@@ -132,9 +139,11 @@
      (numV (* (numV-n l) (numV-n r)))]
     [else
      (error 'num+ "OAZO num*: At least one argument was not a number")]))
+
 (check-exn (regexp (regexp-quote "OAZO num*: At least one argument was not a number"))
            (lambda () (num* (numV 1) (funV 's (list 's) (numC 1)))))
 
+; divide 2 numVs
 (: num/ (-> Value Value Value))
 (define (num/ l r)
   (cond
@@ -142,6 +151,7 @@
      (numV (/ (numV-n l) (numV-n r)))]
     [else
      (error 'num+ "OAZO num/: At least one argument was not a number")]))
+
 (check-exn (regexp (regexp-quote "OAZO num/: At least one argument was not a number"))
            (lambda () (num/ (numV 1) (funV 's (list 's) (numC 1)))))
 
@@ -190,8 +200,8 @@
 
 
 
-#|
 
+#|
 ; interprets the function named main using the list of function definitions
 (: interp-fns (-> (Listof fundefC) Real))
 (define (interp-fns fds)
@@ -202,11 +212,16 @@
 (check-equal? (interp-fns (list (fundefC 'main '(init) (binopC '+ (numC 2) (numC 2))))) 4)
 (check-exn (regexp (regexp-quote "OAZO main is empty"))
            (lambda () (interp-fns '())))
+|#
 
 ; parses and interprets an OAZO program 
-(: top-interp (-> Sexp Real))
-(define (top-interp fun-sexps)
-  (interp-fns (parse-prog fun-sexps)))
+;(: top-interp (-> Sexp Real))
+;(define (top-interp fun-sexps)
+;  (interp-fns (parse-prog fun-sexps)))
+
+(: top-interp (-> Sexp String))
+(define (top-interp s)
+  (serialize (interp (parse s) top-env)))
 
 (check-= (top-interp '{{func {f x} : {+ x 14}}
                        {func {main init} : {f 2}}}) 16 0)
@@ -218,4 +233,3 @@
                        (func (main init) : (minus-five (+ 8 init))))) 3 0)
 (check-= (top-interp '{{func {f x y} : {+ x y}}
                        {func {main} : {f 1 2}}}) 3 0)
-|#
