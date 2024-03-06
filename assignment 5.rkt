@@ -2,102 +2,159 @@
 
 (require typed/rackunit)
 
-(struct bind ([name : Symbol] [val : Value]) #:transparent)
+(struct bind ([name : Symbol][val : Value]) #:transparent)
 (define-type Env (Listof bind))
 
-(define-type List-symbols (Listof Symbol))
-(struct numV ([n : Real]) #:transparent)
-(struct funV ([name : Symbol] [args : List-symbols] [body : ExprC]) #:transparent)
-(define-type Value (U numV funV))
-
-(define top-env (list (bind 'true #t) (bind 'false #f)))
-
-(define-type ExprC (U numC binopC idC appC ifleq0?))
+(define-type ExprC (U numC idC appC lamC strC condC))
 (struct numC ([n : Real]) #:transparent)
-(struct binopC ([s : Symbol][l : ExprC][r : ExprC]) #:transparent)
 (struct idC ([s : Symbol]) #:transparent)
-(struct appC ([fun : Symbol][args : (Listof ExprC)]) #:transparent)
-(struct ifleq0? ([test : ExprC] [if : ExprC] [else : ExprC]) #:transparent)
+(struct lamC ([args : (Listof Symbol)][body : ExprC]) #:transparent)
+(struct appC ([fun : ExprC][args : (Listof ExprC)]) #:transparent)
+(struct strC ([s : String]) #:transparent)
+(struct condC ([i : ExprC][t : ExprC][e : ExprC]) #:transparent)
 
-(struct fundefC ([name : Symbol][args : (Listof Symbol)][body : ExprC]) #:transparent)
+(define-type Value (U numV closV Boolean primV String))
+(struct numV ([n : Real]) #:transparent)
+(struct closV ([args : (Listof Symbol)][body : ExprC][env : Env]) #:transparent)
+(struct primV ([op : Symbol]) #:transparent)
 
-(define-type Binop (U '+ '- '* '/))
-(define-type InvalidId (U Binop 'func 'ifleq0? 'else))
+(define top-env (list
+                 (bind 'true #t)
+                 (bind 'false #f)
+                 (bind '+ (primV '+))
+                 (bind '- (primV '-))
+                 (bind '* (primV '*))
+                 (bind '/ (primV '/))
+                 (bind '<= (primV '<=))
+                 (bind 'equal? (primV 'equal?))
+                 (bind 'error (primV 'error))))
+
+; add 2 Values
+(: primop+ (-> Value Value Value))
+(define (primop+ l r)
+  (cond
+    [(and (numV? l) (numV? r))
+     (numV (+ (numV-n l) (numV-n r)))]
+    [else
+     (error "OAZO + one argument was not a number")]))
+
+(check-exn (regexp (regexp-quote "OAZO + one argument was not a number"))
+           (lambda () (primop+ #f #t)))
+
+; subtract 2 Values
+(: primop- (-> Value Value Value))
+(define (primop- l r)
+  (cond
+    [(and (numV? l) (numV? r))
+     (numV (- (numV-n l) (numV-n r)))]
+    [else
+     (error "OAZO - one argument was not a number")]))
+
+(check-exn (regexp (regexp-quote "OAZO - one argument was not a number"))
+           (lambda () (primop- #f #t)))
+
+; multiply 2 Values
+(: primop* (-> Value Value Value))
+(define (primop* l r)
+  (cond
+    [(and (numV? l) (numV? r))
+     (numV (* (numV-n l) (numV-n r)))]
+    [else
+     (error "OAZO * one argument was not a number")]))
+
+(check-exn (regexp (regexp-quote "OAZO * one argument was not a number"))
+           (lambda () (primop* #f #t)))
+
+; divide 2 Values
+(: primop/ (-> Value Value Value))
+(define (primop/ l r)
+  (cond
+    [(and (numV? r) (equal? (numV-n r) 0)) (error "OAZO divide by 0")]
+    [(and (numV? l) (numV? r))
+     (numV (/ (numV-n l) (numV-n r)))]
+    [else
+     (error "OAZO / one argument was not a number")]))
+
+(check-exn (regexp (regexp-quote "OAZO / one argument was not a number"))
+           (lambda () (primop/ #f #t)))
+(check-exn (regexp (regexp-quote "OAZO divide by 0"))
+           (lambda () (primop/ (numV 1) (numV 0))))
+
+; less than or equal to
+(: primop<= (-> Value Value Value))
+(define (primop<= l r)
+  (cond
+    [(and (numV? l) (numV? r))
+     (<= (numV-n l) (numV-n r))]
+    [else
+     (error "OAZO <= one argument was not a number")]))
+
+(check-exn (regexp (regexp-quote "OAZO <= one argument was not a number"))
+           (lambda () (primop<= #f #t)))
+
+; checks equality
+(: primopEqual? (-> Value Value Value))
+(define (primopEqual? l r)
+  (cond
+    [(and (numV? l) (numV? r)) (equal? (numV-n l) (numV-n r))]
+    [(and (boolean? l) (boolean? r)) (equal? l r)]
+    [(and (string? l) (string? r)) (equal? l r)]
+    [else #f]))
+
+; desugar local variable names
+(: desugar-ids (-> Sexp Symbol))
+(define (desugar-ids l)
+  (match l
+    [(list id '<- _) (if (or
+                          (equal? id 'if)
+                          (equal? id 'then)
+                          (equal? id 'else)
+                          (equal? id '<-)
+                          (equal? id 'anon)
+                          (equal? id ':))
+                         (error "OAZO invalid local assignment")
+                         (cast id Symbol))]))
+
+; desugar local variable values
+(: desugar-exprs (-> Sexp ExprC))
+(define (desugar-exprs l)
+  (match l
+    [(list _ '<- exp) (parse exp)]))
+
 
 ; parse Sexp to ExprC
 (: parse (-> Sexp ExprC))
 (define (parse exp)
   (match exp
-    [(list (? (make-predicate Binop) op) l r) (binopC op (parse l) (parse r))]
-    [(list 'ifleq0? test if else) (ifleq0? (parse test) (parse if) (parse else))]
+    [(list 'let vars ... body) (let ([ids (map (lambda (i) (desugar-ids (cast i Sexp))) vars)]
+                                     [exprs (map (lambda (e) (desugar-exprs (cast e Sexp))) vars)])
+                                 (if (check-duplicates ids)
+                                     (error "OAZO duplicate local assignment")
+                                     (appC (lamC ids (parse body)) exprs)))]
     [(? real? n) (numC n)]
-    [(? symbol? s) (if ((make-predicate InvalidId) s) (error "OAZO invalid id") (idC s))]
-    [(list (? symbol? fun) args ...) (if ((make-predicate Binop) fun) (error "OAZO incorrect binop arg number")
-                                         (appC fun (map (lambda (arg) (parse arg)) args)))]
-    [else (error "OAZO parse failure")]))
-
-(check-equal? (parse '{+ x 14}) (binopC '+ (idC 'x) (numC 14)))
-(check-equal? (parse '{- x 14}) (binopC '- (idC 'x) (numC 14)))
-(check-equal? (parse '{* x 14}) (binopC '* (idC 'x) (numC 14)))
-(check-equal? (parse '{/ x 14}) (binopC '/ (idC 'x) (numC 14)))
-(check-equal? (parse '{f 2}) (appC 'f (list (numC 2))))
-(check-equal? (parse '{f 1 2 3}) (appC 'f (list (numC 1) (numC 2) (numC 3))))
-(check-equal? (parse '{f}) (appC 'f '()))
-(check-equal? (parse '{ifleq0? 1 1 0}) (ifleq0? (numC 1) (numC 1) (numC 0)))
-(check-exn (regexp (regexp-quote "OAZO parse failure")) (lambda () (parse '("test fail"))))
-(check-exn (regexp (regexp-quote "OAZO invalid id")) (lambda () (parse '(+ / 3))))
-(check-exn (regexp (regexp-quote "OAZO incorrect binop arg number")) (lambda () (parse '(+ 1))))
-
-; parse Sexp into fundefC
-(: parse-fundef (-> Sexp fundefC))
-(define (parse-fundef exp)
-  (match exp
-    [(list 'func (list(? symbol? name) (? symbol? args) ...) ': body)
-     (if (or ((make-predicate InvalidId) name) ((make-predicate InvalidId) args))
-         (error "OAZO invalid func name")
-         (fundefC name (cast args (Listof Symbol)) (parse body)))]
-    [else (error "OAZO parse-fundef failure")]))
-
-(check-equal? (parse-fundef '{func {f x} : {+ x 14}}) (fundefC 'f '(x) (binopC '+ (idC 'x) (numC 14))))
-(check-equal? (parse-fundef '{func {f a b c} : {+ {+ a b} c}})
-              (fundefC 'f '(a b c) (binopC '+ (binopC '+ (idC 'a) (idC 'b)) (idC 'c))))
-(check-exn (regexp (regexp-quote "OAZO parse-fundef failure")) (lambda () (parse-fundef '(k "test" "failure"))))
-(check-exn (regexp (regexp-quote "OAZO invalid func name")) (lambda () (parse-fundef '{func {+ l} : {+ 1 1}})))
-
-; parses Sexp into list of fundefC
-(: parse-prog (-> Sexp (Listof fundefC)))
-(define (parse-prog exp)
-  (match exp
-    [(cons f r) (cons (parse-fundef f) (parse-prog r))]
-    ['() '()]
-    [else (error "OAZO parse-prog failure")]))
-
-(check-equal? (parse-prog '{{func {f x} : {+ x 14}}
-                            {func {main init} : {f 2}}})
-              (list (fundefC 'f '(x) (binopC '+ (idC 'x) (numC 14))) (fundefC 'main '(init) (appC 'f (list (numC 2))))))
-(check-exn (regexp (regexp-quote "OAZO parse-prog failure")) (lambda () (parse-prog "")))
-
-; gets fundef body given name of fundef and list of fundefs
-(: get-fundef (-> Symbol (Listof funV) funV))
-(define (get-fundef name fds)
-  (match fds
-    [(cons f r) (cond
-                  [(eq? (funV-name f) name) f]
-                  [else (get-fundef name r)])]
-    [else (error "OAZO get-fundef failure")]))
-
-(check-equal? (get-fundef 'name (list (funV 'name '(arg) (binopC '+ (numC 1) (numC 2)))))
-              (funV 'name '(arg) (binopC '+ (numC 1) (numC 2))))
-(check-exn (regexp (regexp-quote "OAZO get-fundef failure"))
-           (lambda () (get-fundef 'f (list (funV 'name '(arg) (numC 4))))))
-
-; given an OAZO5 value, return a string representation of that value
-(: serialize (-> Value String))
-(define (serialize value)
-  (~v value))
+    [(? symbol? s) (if (or
+                        (equal? s 'if)
+                        (equal? s 'then)
+                        (equal? s 'else)
+                        (equal? s '<-)
+                        (equal? s 'anon)
+                        (equal? s ':))
+                       (error "OAZO parse known symbol")
+                       (idC s))]
+    [(list 'if i 'then t 'else e) (condC (parse i) (parse t) (parse e))]
+    [(list 'anon (list (? symbol? args) ...) ': body) (if (check-duplicates args)
+                                                          (error "OAZO duplicate args")
+                                                          (lamC (cast args (Listof Symbol)) (parse body)))]
+    [(list fun args ...) (appC (parse fun) (map (lambda (arg) (parse arg)) args))]
+    [(? string? s) (strC s)]))
 
 
-; for name in bind in given list of bindings (env) if given symbol matches name, then set bind-val to that
+(check-exn (regexp (regexp-quote "OAZO parse known symbol"))
+           (lambda () (parse '{if})))
+(check-exn (regexp (regexp-quote "OAZO duplicate args"))
+           (lambda () (parse '{anon {x x} : 1})))
+
+; lookup env variable
 (: lookup (-> Symbol Env Value))
 (define (lookup for env)
   (cond
@@ -107,129 +164,102 @@
              (bind-val (first env))]
             [else (lookup for (rest env))])]))
 
-; add 2 numVs
-(: num+ (-> Value Value Value))
-(define (num+ l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (+ (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num+: At least one argument was not a number")]))
+(check-exn (regexp (regexp-quote "OAZO lookup: name not found"))
+           (lambda () (lookup 'a '())))
 
-(check-exn (regexp (regexp-quote "OAZO num+: At least one argument was not a number"))
-           (lambda () (num+ (numV 1) (funV 's (list 's) (numC 1)))))
 
-; subtract 2 numVs
-(: num- (-> Value Value Value))
-(define (num- l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (- (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num-: At least one argument was not a number")]))
-
-(check-exn (regexp (regexp-quote "OAZO num-: At least one argument was not a number"))
-           (lambda () (num- (numV 1) (funV 's (list 's) (numC 1)))))
-
-; multiply 2 numVs
-(: num* (-> Value Value Value))
-(define (num* l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (* (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num*: At least one argument was not a number")]))
-
-(check-exn (regexp (regexp-quote "OAZO num*: At least one argument was not a number"))
-           (lambda () (num* (numV 1) (funV 's (list 's) (numC 1)))))
-
-; divide 2 numVs
-(: num/ (-> Value Value Value))
-(define (num/ l r)
-  (cond
-    [(and (numV? l) (numV? r))
-     (numV (/ (numV-n l) (numV-n r)))]
-    [else
-     (error 'num+ "OAZO num/: At least one argument was not a number")]))
-
-(check-exn (regexp (regexp-quote "OAZO num/: At least one argument was not a number"))
-           (lambda () (num/ (numV 1) (funV 's (list 's) (numC 1)))))
-
-; interprets exprC using a given list of fundefs to return the result of the interpretation as a Real
-(: interp (-> ExprC Env (Listof funV) Value))
-(define (interp exprc env fds)
+; interprets exprC to return Value
+(: interp (-> ExprC Env Value))
+(define (interp exprc env)
   (match exprc
     [(numC n) (numV n)]
-    [(binopC op l r) (match op
-                       ['+ (num+ (interp l env fds) (interp r env fds))]
-                       ['- (num- (interp l env fds) (interp r env fds))]
-                       ['* (num* (interp l env fds) (interp r env fds))]
-                       ['/ (let ([denominator (interp r env fds)])
-                             (if (or (equal? denominator (numV 0)) (equal? denominator (numC 0)))
-                                 (error "OAZO /0") (num/ (interp l env fds) denominator)))]
-                       [else (error "OAZO invalid op")])]
-    [(appC fun args) (let ([fd (get-fundef fun fds)])
-                       (if (eq? (length args) (length (funV-args fd)))
-                           (interp (funV-body fd) (cast (map
-                                                            (lambda (arg param)
-                                                              (bind (cast arg Symbol) (interp (cast param ExprC) env fds)))
-                                                            (funV-args fd) args) Env) fds)
-                           (error "OAZO incorrect number of arguments")))]
-    [(idC n) (lookup n env)]))
+    [(strC s) s]
+    [(idC n) (lookup n env)]
+    [(lamC args body) (closV args body env)]
+    [(condC i t e) (let ([res (interp i env)])
+                     (cond
+                       [(equal? res #t) (interp t env)]
+                       [(equal? res #f)(interp e env)]
+                       [else (error "OAZO non boolean conditional")]))]
+    [(appC fun params) (let ([fd (interp fun env)])
+                         (match fd
+                           [(numV n) (error "OAZO invalid appC")]
+                           [(closV args body e)
+                            (if (eq? (length args) (length params))
+                                (interp body (append (map (lambda (arg param)
+                                                            (bind (cast arg Symbol)
+                                                                  (interp (cast param ExprC) env))) args params) e))
+                                (error "OAZO incorrect number of arguments"))]
+                           [(primV op) (match op
+                                         ['+ (primop+ (interp (first params) env) (interp (first (rest params)) env))]
+                                         ['- (primop- (interp (first params) env) (interp (first (rest params)) env))]
+                                         ['* (primop* (interp (first params) env) (interp (first (rest params)) env))]
+                                         ['/ (primop/ (interp (first params) env) (interp (first (rest params)) env))]
+                                         ['<= (primop<= (interp (first params) env) (interp (first (rest params)) env))]
+                                         ['equal? (primopEqual?
+                                                   (interp (first params) env)
+                                                   (interp (first (rest params)) env))]
+                                         ['error (error "user-error" (serialize (interp (first params) env)))])]))]))
 
 
-(check-exn (regexp (regexp-quote "OAZO incorrect number of arguments"))
-           (lambda () (interp (appC 'f '()) '() (list (funV 'f '(a b) (numC 0))))))
-(check-exn (regexp (regexp-quote "OAZO incorrect number of arguments"))
-           (lambda () (interp (appC 'f (list (numC 1) (numC 2))) '() (list (funV 'f '(a) (numC 0))))))
-(check-equal? (interp (appC 'f (list (numC 1) (numC 2))) '() (list (funV 'f '(a b) (binopC '+ (idC 'a) (idC 'b))))) (numV 3))
-(check-exn (regexp (regexp-quote "OAZO /0"))
-           (lambda () (interp (binopC '/ (numC 5) (numC 0)) '() '())))
-(check-exn (regexp (regexp-quote "OAZO /0"))
-           (lambda () (interp (binopC '/ (numC 5) (binopC '+ (numC 0) (numC 0))) '() '())))
-(check-equal? (interp (binopC '+ (numC 1) (numC 2)) '() '()) (numV 3))
-(check-equal? (interp (binopC '- (numC 7) (numC 3)) '() '()) (numV 4))
-(check-equal? (interp (binopC '* (numC 7) (numC 3)) '() '()) (numV 21))
-(check-equal? (interp (binopC '/ (numC 9) (numC 3)) '() '()) (numV 3))
-(check-exn (regexp (regexp-quote "OAZO invalid op"))
-           (lambda () (interp (binopC 'fail (numC 1) (numC 2)) '() '())))
-(check-equal? (interp (appC 'f (list (numC 2))) '() (list (funV 'f '(x) (binopC '+ (idC 'x) (numC 14))))) (numV 16))
-(check-exn (regexp (regexp-quote "OAZO lookup: name not found"))
-           (lambda () (interp (idC 'fail) '() '())))
+; serialize Value into output string
+(: serialize (-> Value String))
+(define (serialize value)
+  (match value
+    [(numV n) (~v n)]
+    [(? string? s) (~v s)]
+    [#t "true"]
+    [#f "false"]
+    [(closV args body env) "#<procedure>"]
+    [(primV op) "#<primop>"]))
 
-
-
-
-
-#|
-; interprets the function named main using the list of function definitions
-(: interp-fns (-> (Listof fundefC) Real))
-(define (interp-fns fds)
-  (cond
-    [(empty? fds) (error "OAZO main is empty")]
-    [else (interp (subst 0 'init (fundefC-body (get-fundef 'main fds))) fds)]))
-
-(check-equal? (interp-fns (list (fundefC 'main '(init) (binopC '+ (numC 2) (numC 2))))) 4)
-(check-exn (regexp (regexp-quote "OAZO main is empty"))
-           (lambda () (interp-fns '())))
-|#
-
-; parses and interprets an OAZO program 
-;(: top-interp (-> Sexp Real))
-;(define (top-interp fun-sexps)
-;  (interp-fns (parse-prog fun-sexps)))
-
+; top interp takes OAZO input and returns serialized output
 (: top-interp (-> Sexp String))
 (define (top-interp s)
   (serialize (interp (parse s) top-env)))
 
-(check-= (top-interp '{{func {f x} : {+ x 14}}
-                       {func {main init} : {f 2}}}) 16 0)
-(check-= (top-interp '{{func {f x} : {ifleq0? x {+ x 14} {+ x 2}}}
-                       {func {main init} : {f -1}}}) 13 0)
-(check-= (top-interp '{{func {f x} : {ifleq0? x {+ x 14} {+ x 2}}}
-                       {func {main init} : {f 1}}}) 3 0)
-(check-= (top-interp '((func (minus-five x) : (+ x (* -1 5)))
-                       (func (main init) : (minus-five (+ 8 init))))) 3 0)
-(check-= (top-interp '{{func {f x y} : {+ x y}}
-                       {func {main} : {f 1 2}}}) 3 0)
+
+(check-equal? (parse '{anon {z} : z}) (lamC '(z) (idC 'z)))
+(check-equal? (parse '{+ 3 4}) (appC (idC '+) (list (numC 3) (numC 4))))
+(check-equal? (parse '{{anon {z} : z} 1}) (appC (lamC '(z) (idC 'z)) (list (numC 1))))
+(check-equal? (parse '{{anon {z y} : {+ z y}}
+                       23 98})
+              (appC (lamC '(z y) (appC (idC '+) (list (idC 'z) (idC 'y)))) (list (numC 23) (numC 98))))
+(check-equal? (top-interp '{+ 3 4}) "7")
+(check-equal? (top-interp 'false) "false")
+(check-equal? (top-interp 'true) "true")
+(check-equal? (top-interp '{anon {z} : {z}}) "#<procedure>")
+(check-equal? (top-interp '{anon {z} : {+ z 10}}) "#<procedure>")
+(check-equal? (top-interp '{{anon {z} : z} 1}) "1")
+(check-equal? (top-interp '{* 3 4}) "12")
+(check-equal? (top-interp '{{anon {z y} : {+ z y}} {+ 9 14} 98}) "121")
+(check-equal? (top-interp '{- 2 1}) "1")
+(check-equal? (top-interp '{/ 4 2}) "2")
+(check-equal? (top-interp '{<= 4 2}) "false")
+(check-equal? (top-interp '{<= 2 4}) "true")
+(check-equal? (top-interp '3) "3")
+(check-equal? (top-interp '"abcd") "\"abcd\"")
+(check-equal? (top-interp '+) "#<primop>")
+(check-equal? (top-interp '{equal? 1 2}) "false")
+(check-equal? (top-interp '{equal? {anon {a} : 1} {anon {a} : 1}}) "false")
+(check-equal? (top-interp '{equal? 1 1}) "true")
+(check-equal? (top-interp '{equal? "abc" "abc"}) "true")
+(check-equal? (top-interp '{equal? false false}) "true")
+(check-equal? (top-interp '{if true then 3 else 4}) "3")
+(check-equal? (top-interp '{if false then 3 else 4}) "4")
+(check-equal? (top-interp '{let
+                               {z <- {+ 9 14}}
+                             {y <- 98}
+                             {+ z y}}) "121")
+(check-exn (regexp (regexp-quote "OAZO incorrect number of arguments"))
+           (lambda () (top-interp '{{anon {a b} : 1} 1})))
+(check-exn (regexp (regexp-quote "OAZO non boolean conditional"))
+           (lambda () (top-interp '{if 3 then 4 else 5})))
+(check-exn (regexp (regexp-quote "OAZO invalid appC"))
+           (lambda () (top-interp '(3 4 5))))
+(check-exn (regexp (regexp-quote "OAZO duplicate local assignment"))
+           (lambda () (parse '(let (z <- (anon () : 3)) (z <- 9) (z)))))
+(check-exn (regexp (regexp-quote "user-error \"\\\"1234\\\"\""))
+           (lambda () (top-interp '(+ 4 (error "1234")))))
+(check-exn (regexp (regexp-quote "OAZO invalid local assignment"))
+           (lambda () (parse '(let (: <- "") "World"))))
